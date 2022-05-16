@@ -1,0 +1,338 @@
+---
+title: "Travel Insurance - EDA"
+author: "Khaled Sobeh"
+date: "5/12/2022"
+output: html_document
+---
+
+
+## importing libraries
+```{r setup, include=FALSE}
+library(dplyr)
+library(Amelia)
+library(forcats)
+library(GGally)
+library(ggplot2)
+library(caTools)
+library(lmtest)
+library(caret)
+library(car)
+library(randomForest)
+library(cowplot)
+library(tidyverse)
+library(broom)
+library(priceR)
+```
+
+
+```{r}
+## reading the data
+###################
+Travel <- read.csv('TravelInsurancePrediction.csv')
+```
+```{r}
+str(Travel)
+```
+
+notes:
+1. We have 1987 obervations.
+2. X variable is irrelevant
+3. We have 8 features
+4. One binary target
+
+## checking missing data
+```{r}
+## Checking for missing data
+############################
+missmap(Travel)
+```
+
+no missing data.
+
+
+### Changing data types.
+```{r}
+## delete irrelevant variables
+##############################
+Travel <- select(Travel,-X)
+
+## Change data type: Categorical variables
+##########################################
+Travel$EmploymentType <- as.factor(Travel$Employment.Type)
+Travel <- select(Travel,-Employment.Type)
+Travel$GraduateOrNot <- as.factor(Travel$GraduateOrNot)
+Travel$ChronicDiseases <- as.factor(Travel$ChronicDiseases)
+Travel$FrequentFlyer <- as.factor(Travel$FrequentFlyer)
+Travel$EverTravelledAbroad <- as.factor(Travel$EverTravelledAbroad)
+Travel$TravelInsurance <- as.factor(Travel$TravelInsurance)
+Travel$FamilyMembers <- as.factor(Travel$FamilyMembers)
+```
+
+Annual Income in USD:
+```{r}
+#library(priceR)
+usd_inr <- historical_exchange_rates("INR", to = "USD", start_date = "2019-01-01", end_date = "2019-12-31")[,2]
+Travel$AnnualIncome <- Travel$AnnualIncome*mean(usd_inr) #from INR currency to USD.
+```
+
+
+## Train test datasets.
+We don't have a test set, so We will split the data.
+```{r}
+## Splitting the data
+#####################
+set.seed(99)
+split <- sample.split(Travel$TravelInsurance,SplitRatio = 0.7)
+train_data <- subset(Travel,split == T)
+test_data <- subset(Travel,split == F)
+```
+
+
+## Explonarotary Data Analysis
+
+
+### Features that we have:
+```{r, echo=FALSE}
+df <- data.frame("Binary Variables" =  c('GraduateOrNot', 'ChronicDiseases',
+                      'FrequentFlyer', 'EverTravelledAbroad', 'EmploymentType'),
+"Continuous Variables" =  c('Age', 'AnnualIncome',NA,NA,NA),
+"Discrete Variables" =  c('FamilyMembers',NA,NA,NA,NA))
+opts <- options(knitr.kable.NA = "")
+knitr::kable(df)
+```
+
+
+### Travel Insurance - the target
+
+```{r}
+ggplot(train_data,aes(TravelInsurance)) + geom_bar(fill = 'lightblue',color = 'black') +
+  geom_text(stat = "count",aes(label = paste(..count..," (",scales::percent(..count../sum(..count..)),")", sep = "")),
+            position = position_dodge(0.9), vjust = -0.2) + 
+  ggtitle('Travel Insurance:the target') + xlab('Travel Insurance')
+```
+we have imbalanced dataset. therefore we might use another performane measure(e.g. recall,precision.)
+
+### continuous variable
+
+#### Age
+```{r, message=FALSE,warning=FALSE}
+plot_grid(
+  ggplot(train_data,aes(Age)) + 
+    geom_histogram(color = 'white', fill = '#E69E80', linetype = 'dashed') +
+    labs(title =  'Age variable',
+       subtitle = 'the blue dot is the average of age'),
+  
+  ggplot(train_data, aes(y = Age, x = 1)) + gghalves::geom_half_violin() +
+  #gghalves::geom_half_dotplot(binwidth = 1/8) +
+  gghalves::geom_half_boxplot(alpha=0.2, width = 0.3, outlier.alpha = 1, outlier.color = 'red') +
+    stat_summary(fun.y=mean, geom="point", shape=20, size=5, color="lightblue") +
+    coord_flip() + labs(x = "", y = ""),
+  
+  ncol = 1
+)
+```
+```{r}
+print('unique values by age:')
+table(train_data$Age)
+```
+
+```{r}
+AgeCategory <- as.factor(ifelse(train_data$Age<30,'(,29]', 
+                                ifelse(train_data$Age<35,'[30,34]', '[35,)')))
+train_data$AgeCategory <- AgeCategory
+```
+```{r}
+ggplot(train_data,aes(as.factor(Age))) + geom_bar(aes(fill = TravelInsurance), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Age',
+       subtitle = 'the numbers under the bar are the number of people for each Age')
+```
+
+- there is a difference between the groups of age
+
+
+age variable is not normally distributed.  
+- We might use a model with this variable as a factor,normalize it, or:  
+- splitting Age variable to 3 categories:
+```{r}
+ggplot(train_data,aes(AgeCategory)) + geom_bar(aes(fill = TravelInsurance), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Age',
+       subtitle = 'the numbers under the bar are the number of people for each Age category')
+```
+
+- as a category, We do not see a difference, only for 'Ages' under 30
+```{r}
+train_data <- select(train_data,-AgeCategory)
+```
+
+
+
+#### AnnualIncome
+```{r, warning=FALSE}
+plot_grid(
+  ggplot(train_data,aes(AnnualIncome)) + 
+    geom_histogram(bins = 20, color = 'white', fill = '#E69E80', linetype = 'dashed') +
+    labs(title =  'Age variable',
+       subtitle = 'the blue dot is the average of age'),
+  
+  ggplot(train_data, aes(y = AnnualIncome, x = 1)) + gghalves::geom_half_violin() +
+  #gghalves::geom_half_dotplot(binwidth = 1/8) +
+  gghalves::geom_half_boxplot(alpha=0.2, width = 0.3, outlier.alpha = 1, outlier.color = 'red') +
+    stat_summary(fun.y=mean, geom="point", shape=20, size=5, color="lightblue") +
+    coord_flip() + labs(x = "", y = ""),
+  
+  ncol = 1
+)
+```
+
+We will try to make it looks normally distributed:
+```{r}
+plot_grid(ggplot(train_data,aes(AnnualIncome)) + geom_histogram(bins = 20) + ggtitle('without'),
+          ggplot(train_data,aes(log(AnnualIncome))) + geom_histogram(bins = 20) + ggtitle('log'),
+          ggplot(train_data,aes(AnnualIncome^2)) + geom_histogram(bins = 20) + ggtitle('^2'),
+          ggplot(train_data,aes(AnnualIncome^3)) + geom_histogram(bins = 20) + ggtitle('^3'),
+          ggplot(train_data,aes(sqrt(AnnualIncome))) + geom_histogram(bins = 20) + ggtitle('sqrt')
+          )
+```
+
+We will try to transform it using Tukey transformation:
+```{r, results = FALSE}
+par(mfrow=c(2,2))
+norm_income <- rcompanion::transformTukey(train_data$AnnualIncome, returnLambda = T)
+```
+
+We might use it for models with normality assumption, so it's not bad to keep it.  
+
+
+#### Bivariate Visualizations between Age, Annual Income and Travel Insurance
+```{r, message=FALSE}
+continuous_variables <- select(train_data,c(Age,AnnualIncome))
+continuous_variables$FamilyMembers <- as.integer(train_data$FamilyMembers) 
+continuous_variables$TravelInsurance <- train_data$TravelInsurance 
+
+ggpairs(continuous_variables)
+```
+
+notes:
+- from the correlations, we can expect not to have a multicollinearity problem between continuous variables.
+
+- the variables are not normally distributed.
+ 
+- Both who had and hadn't an Insurance has a very similar average in age.
+ 
+- Annual Income has a different average between those who had and hadn't an Insurance.
+
+ 
+### Categorical variables  
+
+#### Employment type
+```{r}
+ggplot(train_data,aes(EmploymentType)) + geom_bar(aes(fill = TravelInsurance), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Employment Type',
+       subtitle = 'the numbers under the bar are the number of people for each Employment Type category')
+```
+
+- we have two type of Employment type. 
+
+- private sector/self employed are more likely to have a travel insurance.
+
+- Government sector are more likely NOT to have a travel insurance.  
+
+#### Graduation
+```{r}
+ggplot(train_data,aes(GraduateOrNot)) + geom_bar(aes(fill = TravelInsurance), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Graduation',
+       subtitle = 'the numbers under the bar are the number of people for each Graduation category')
+```
+
+the proportion of having a Travel Insurance does not change if a person is graduated or not.  
+
+#### Chronic Diseases
+```{r}
+plot_grid(
+  ggplot(train_data,aes(ChronicDiseases)) + geom_bar(aes(fill = TravelInsurance), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Chronic Diseases',
+       subtitle = 'the numbers under the bar are the number of people for each Chronic Diseases category'),
+ncol = 1)
+```
+
+Surprisingly, from this bar plot, we think that this feature will not be important, we can't notice any pattern here for those who have a chronic diseases or not.  
+
+
+#### Frequent Flyer
+Frequent Flyer: Derived Data Based On Customer's History Of Booking Air Tickets On Atleast 4 Different Instances In The Last 2 Years[2017-2019].
+```{r}
+ggplot(train_data,aes(FrequentFlyer)) + geom_bar(aes(fill = TravelInsurance), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Frequent Flyer', ylab('Frequent Flyer'),
+       subtitle = 'the numbers under the bar are the number of people for each Frequent Flyer category')
+```
+
+    
+
+#### Ever Travelled Abroad
+```{r}
+ggplot(train_data,aes(EverTravelledAbroad)) + geom_bar(aes(fill = TravelInsurance), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Ever Travelled Abroadr', ylab('Ever Travelled Abroad'),
+       subtitle = 'the numbers under the bar are the number of people for each Travelled Abroad category')
+```
+  
+  
+
+###  Bivariate visualization between the independent variables.
+```{r}
+plot_grid(ggplot(train_data,aes(x=FrequentFlyer,y =AnnualIncome)) +
+  geom_boxplot(),
+  ggplot(train_data,aes(x=ChronicDiseases,y =AnnualIncome)) +
+  geom_boxplot(),
+  ggplot(train_data,aes(x=GraduateOrNot,y =AnnualIncome)) +
+  geom_boxplot(),
+  ggplot(train_data,aes(x=EverTravelledAbroad,y =AnnualIncome)) +
+  geom_boxplot())
+```
+
+  
+```{r }
+ggplot(train_data,aes(Age)) + geom_bar(aes(fill = GraduateOrNot), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Graduation percentage by Age', x = 'Age',y = 'percent',
+       subtitle = 'the numbers under the bar are the number of people for each Age') +
+     theme(legend.position="top")
+```
+
+in train data, 
+- we don't have graduated travelers with age=30.  
+- Ages 26,32,33 all graduated.  
+
+
+```{r}
+ggplot(train_data,aes(Age)) + geom_bar(aes(fill = EmploymentType), position = 'fill') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(-0.05)) + 
+  scale_fill_brewer(palette = "Greens") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  labs(title =  'Travel Insurance percentage by Age',
+       subtitle = 'the numbers under the bar are the number of people for each Age') +
+     theme(legend.position="top")
+```
+
+- same here with employment type.
