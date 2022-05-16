@@ -1,0 +1,169 @@
+---
+title: "Russia - Ukraine war - EDA project"
+author: "Khaled Sobeh"
+date: "5/16/2022"
+output: html_document
+---
+
+
+data:
+Acronyms:
+
+- POW - Prisoner of War,
+- MRL - Multiple Rocket Launcher,
+- APC - Armored Personnel Carrier,
+- SRBM - Short-range ballistic missile,
+- drones:
+   - UAV - Unmanned Aerial Vehicle,
+   - RPA - Remotely Piloted Vehicle.
+   
+Tracking
+
+- Personnel
+- Prisoner of War
+- Armored Personnel Carrier
+- Multiple Rocket Launcher
+- Aircraft
+- Anti-aircraft warfare
+- Drone
+- Field Artillery
+- Fuel Tank
+- Helicopter
+- Military Auto
+- Naval Ship
+- Tank
+
+
+
+## importing the libraries
+```{r, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(Amelia)
+library(stringr)
+library(ggpubr)
+library(dplyr)
+library(corrplot)
+library(ggpubr)
+library(reshape2)
+library(plotly)
+library(DataExplorer)
+library(naniar)
+```
+
+## first look
+```{r}
+library(readr)
+war_equipment <- read.csv('russia_losses_equipment.csv')
+war_personnel <- read.csv('russia_losses_personnel.csv')
+str(war_equipment)
+str(war_personnel)
+war <- left_join(war_equipment,select(war_personnel,-date),by = "day") # merge in one dataset
+```
+
+## missing data
+```{r}
+missmap(war)
+naniar::gg_miss_var(war)
+```
+```{r}
+print('variables with missing data')
+miss_var_which(war)
+```
+
+
+## Equipment Loss: EDA
+
+```{r}
+war_melt <- melt(select(war_equipment,-date), id = "day")
+p1 <- ggplot(war_melt,aes(x = day,y = value,color = variable)) +
+  geom_line() + geom_point()
+
+ggplotly(p1)
+```
+
+
+```{r}
+el1 <- data.frame(war_melt %>% dplyr::group_by(variable) %>% dplyr::summarise(mx = max(value)))
+el1$high <- as.factor(ifelse(el1$mx>300,"  "," "))
+fn <- left_join(war_melt,el1,by = "variable")
+
+p2 <- ggplot(fn,aes(x = day,y = value,color = variable)) +
+  facet_wrap(vars(high), scales = "free") + scale_x_continuous(breaks = seq(0,40,5)) +
+  geom_line() + geom_point() + ggtitle("losses by days")
+
+ggplotly(p2)
+```
+this plot is just the same as the one above, the only difference is that the features are splitted in several graphs.
+
+
+```{r}
+df <- na.omit(melt(select(war_equipment,-date)[length(war_equipment$day),],id = "day"))
+df$high <- ifelse(df$value>200,""," ")
+p3 <- ggplot(df,aes(x = reorder(variable,- value), y = value)) +
+  geom_bar(stat = "identity", fill="steelblue") +
+  facet_wrap(vars(high), scales = "free") +
+  #scale_x_discrete(guide = guide_axis(angle = 50)) + #for facet_grid would be more useful
+  geom_text(aes(label = value), y = 1,hjust = 0, color="white", size=3)+ #for only ggplot
+  theme_minimal() + coord_flip() + labs(title = paste("losses of equipments till day ",df$day[1])) +
+  scale_x_discrete(name = "losses")
+#ggplotly(p3)
+p3
+```
+
+
+## Personal Loss: EDA
+
+```{r}
+pl1 <- ggplot(war_personnel) +
+  geom_bar(aes(x = day, y = personnel, fill = personnel.),stat = "identity")
+
+personnel_day_by_day <- c(war_personnel$personnel[1])
+for(i in 2:length(war_personnel$date)){
+  personnel_day_by_day <- c(personnel_day_by_day,war_personnel$personnel[i]-war_personnel$personnel[i-1])
+}
+war_personnel$personnel_day_by_day <- personnel_day_by_day
+pl11 <- ggplot(war_personnel) +
+  geom_bar(aes(x = day,y = personnel_day_by_day, fill = personnel.),stat = "identity") +
+  ggtitle("left plot:personnel by day(accumulated) ,righ plot:personnel by day")
+
+subplot(pl1,pl11)
+```
+
+
+```{r}
+pl2 <- ggplot(war_personnel) +
+  geom_bar(aes(x = day, y = POW, fill = personnel.),stat = "identity") + 
+  ggtitle("POW by day(accumulated)")
+
+POW_day_by_day <- c(war_personnel$POW[1])
+for(i in 2:length(war_personnel$date)){
+  POW_day_by_day <- c(POW_day_by_day,war_personnel$POW[i]-war_personnel$POW[i-1])
+}
+war_personnel$POW_day_by_day <- POW_day_by_day
+pl21 <- ggplot(war_personnel) +
+  geom_bar(aes(x = day,y = POW_day_by_day, fill = personnel.),stat = "identity") +
+  ggtitle("left plot:POW by day(accumulated) ,righ plot:POW by day")
+
+subplot(pl2,pl21)
+```
+
+- less Prisoners from day to day.
+
+```{r}
+pl3 <- ggplot(war_personnel) + geom_point(aes(personnel,POW, color = day,shape = personnel.), alpha = 0.5) + scale_x_continuous(breaks =  seq(0,max(war_personnel$personnel),2500)) +
+  scale_shape_manual(values=c(1,16))
+ggplotly(pl3)
+```
+notice that there are no points for days 16,17,18 , because they have the same personnel and POW values as day 19(point 19 is darker).
+
+
+## correlations
+```{r, fig.width=10,fig.height=11}
+corr_data <- cor(select(war,-c(day,date,personnel.,special.equipment ,mobile.SRBM.system))[1:65,])
+corrplot(corr_data, number.cex = 0.8,tl.cex = 0.9,
+         type = 'lower',tl.srt = 0, method = "number")
+```
+
+
+high linear correlation between the variables.
+
