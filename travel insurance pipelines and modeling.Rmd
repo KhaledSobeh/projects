@@ -1,0 +1,296 @@
+---
+title: "pipelines and modeling"
+author: "Khaled Sobeh"
+date: "5/17/2022"
+output: html_document
+---
+
+
+## libraries
+```{r, echo=FALSE}
+library(dplyr)
+library(caTools)
+```
+
+
+## importing the data
+```{r}
+Travel <- read.csv('TravelInsurancePrediction.csv')
+str(Travel)
+```
+
+## delete irrelevant columns
+```{r}
+Travel <- select(Travel,-X)
+```
+  
+  
+## change names
+```{r}
+Travel <- Travel %>%
+  rename(EmploymentType = Employment.Type)
+```
+  
+  
+## Train test datasets.
+```{r}
+## Splitting the data
+#####################
+set.seed(99)
+split <- sample.split(Travel$TravelInsurance,SplitRatio = 0.7)
+train_data <- subset(Travel,split == T)
+test_data <- subset(Travel,split == F)
+```
+  
+  
+## Features that we have:
+```{r, echo=FALSE}
+df <- data.frame("Binary Variables" =  c('GraduateOrNot', 'ChronicDiseases',
+                      'FrequentFlyer', 'EverTravelledAbroad', 'EmploymentType'),
+"Continuous Variables" =  c('Age', 'AnnualIncome',NA,NA,NA),
+"Discrete Variables" =  c('FamilyMembers',NA,NA,NA,NA))
+opts <- options(knitr.kable.NA = "")
+knitr::kable(df)
+```
+  
+## changing data types.  
+- change binary variables to factor data type.  
+- change continuous variables to numeric data type.
+- change discrete variables to numeric data type.
+```{r}
+change_dtypes <- function(df){
+  for(i in 1:ncol(df)) {
+    if(length(table(df[,i])) <= 2){ ##check features with 2 categories
+      df[,i] <- as.factor(df[,i])
+    }
+    else{ ##features for 3+ unique values
+       df[,i] <- as.numeric(df[,i])
+    }
+  }
+  return(df)
+}
+train_data <- change_dtypes(train_data)
+test_data <- change_dtypes(test_data)
+```
+  
+  
+## feature engineering
+```{r}
+## feature 1: Age feature as category feature
+age_categories <- function(x){
+  return(as.factor(ifelse(x<30,'(,29]', 
+                                ifelse(x<35,'[30,34]', '[35,)'))))
+}
+
+```
+  
+  
+## scaling the numeric/integer variables.
+  
+### scaling function
+```{r}
+scale_data_values <- function(df){
+  numeric_features <- colnames(df %>% select_if(is.numeric))
+  scale_df <- data.frame(avg = numeric(), sd = numeric()) ##create empty data frame
+  for( feature in numeric_features ){
+    scale_df[nrow(scale_df) + 1,] <- c(mean(df[,feature]),sd(df[,feature]))
+    row.names(scale_df)[nrow(scale_df)] <- feature
+  }
+  return(t(scale_df))
+}
+
+scale_features <- function(df, scale_table){
+  features <- colnames(scale_table)
+  for( feature in features ){
+    df[, feature] <- (df[, feature] - scale_table[1,feature]) / scale_table[2,feature]
+
+  }
+  return(df)
+  
+}
+```
+
+```{r}
+get_scales <- scale_data_values(train_data)
+train_data <- scale_features(train_data, get_scales)
+test_data <- scale_features(test_data, get_scales)
+```
+
+
+
+
+
+
+## ML Models
+
+
+### Logistic Regression
+
+
+```{r}
+model_formula <- stats::as.formula(TravelInsurance ~ Age + GraduateOrNot +
+                                     AnnualIncome + FamilyMembers + ChronicDiseases + 
+                                     FrequentFlyer + EverTravelledAbroad + EmploymentType +
+                                     EmploymentType:AnnualIncome + EverTravelledAbroad:AnnualIncome +
+                                     FrequentFlyer:AnnualIncome)
+```
+
+We saw changing in average  between EmploymentType:AnnualIncome, EverTravelledAbroad:AnnualIncome, FrequentFlyer:AnnualIncome, so We will try an interaction between them.  
+
+
+#### Our model steps:
+1. build a logistic regression model
+2. apply stepwise to the model.
+3. find the best model(1 or 2)
+4. Check assumptions.  
+
+
+1. Logistic Regression model
+```{r}
+lm <- glm(TravelInsurance~. ,family = binomial ,data = train_data)
+summary(lm)
+
+#predict our final model:
+fitted.prob <- predict(lm,select(test_data,-TravelInsurance),type = 'response')
+fitted.results <- ifelse(fitted.prob>0.5,1,0)
+misClassError <- mean(fitted.results != test_data$TravelInsurance)
+print(1-misClassError)
+
+#Create Confusion matrix
+table(test_data$TravelInsurance,fitted.prob>0.5)
+```
+  
+2. using stepwise regression:
+```{r, message=FALSE, warning=FALSE}
+library(MASS)
+step.model <- lm %>% stepAIC(direction = "both", trace = FALSE)
+summary(step.model)
+detach(package:MASS)
+
+fitted.prob <- predict(step.model,dplyr::select(test_data,-TravelInsurance),type = 'response')
+fitted.results <- ifelse(fitted.prob>0.5,1,0)
+misClassError <- mean(fitted.results != test_data$TravelInsurance)
+print(1-misClassError)
+
+table(test_data$TravelInsurance,fitted.prob>0.5)
+```
+
+3. find the best model
+```{r}
+lrtest(step.model, lm)
+```
+
+From the output we can see that the p-value of the likelihood ratio test is more than .05, we would accept the null hypothesis. This means, both models are equally well.
+
+We will use step.model, because it removed non important variables.
+
+  
+##### check linearity assumption
+```{r}
+fitted.prob <- predict(step.model,dplyr::select(train_data,-TravelInsurance),type = 'response')
+cont_data <- select(train_data,c(AnnualIncome,FamilyMembers,Age))
+cont_vars <- colnames(cont_data)
+cont_data <- cont_data %>%
+  mutate(logit = log(fitted.prob/(1-fitted.prob))) %>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+
+ggplot(cont_data, aes(logit, predictor.value)) + geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  theme_bw() + 
+  facet_wrap(~predictors, scales = "free_y")
+```
+
+##### Influential values
+```{r}
+model.data <- augment(step.model) %>% mutate(index = 1:n()) 
+model.data %>% filter(abs(.std.resid) > 3)
+```
+We don't have influential values.
+
+
+##### Multicollinearity
+```{r}
+car::vif(step.model)
+```
+As a rule of thumb, a VIF value that exceeds 4 or 10 indicates a problematic amount of collinearity. In our example, there is no collinearity: all variables have a value of VIF well below 4.
+
+ 
+ 
+ 
+
+## Random Forest
+```{r}
+rf <- randomForest(TravelInsurance~.,train_data,ntree = 500,mtry=3)
+rf_pr <- predict(rf,newdata = select(test_data,-TravelInsurance),type = 'class')
+(cm <- table(rf_pr,test_data$TravelInsurance))
+cat('test Accuracy =',sum(diag(cm)) / sum(cm))
+```
+ 
+### Hyperparameter tuning with non-repeated k-fols cross-validation.
+note: train() and trainControl() from library(caret) can do almost always a better job from the code below, I wrote it only for my understanding to hyperparameter tuning and cv.
+```{r}
+## Tune mtry, ntree:
+set.seed(98)
+folds <- createFolds(train_data$TravelInsurance, k = 10)
+Mtry <- c(1:4)
+Ntree <- c(350,400,450,500,525,550,600)
+ntree_col <- c()
+mtry_col <- c()
+final_pred_train <- c()
+final_pred_test <- c()
+for(i in Mtry){
+  for(j in Ntree){
+    test_pred <- c()
+    train_pred <- c()
+    for(k in 1:10){
+      classifier <- randomForest(TravelInsurance~.,data = train_data[train_data_cv$folds!=i,], mtry=i,ntree=j)
+      y_pred_test <- predict(classifier, newdata = train_data[train_data_cv$folds==i,], type = 'class')
+      cm_test <- table(train_data[train_data_cv$folds==i,]$TravelInsurance, y_pred_test)
+      accuracy_test <- sum(diag(cm_test)) / sum(cm_test)
+      #print(accuracy_test)
+      y_pred_train <- predict(classifier, newdata = train_data[train_data_cv$folds!=i,], type = 'class')
+      cm_train <- table(train_data[train_data_cv$folds!=i,]$TravelInsurance, y_pred_train)
+      accuracy_train <- sum(diag(cm_train)) / sum(cm_train)
+      #print(accuracy_train)
+      test_pred <- c(test_pred,accuracy_test)
+      train_pred <- c(train_pred,accuracy_train)
+    }
+    tst <- mean(test_pred)
+    trn <- mean(train_pred)
+    final_pred_train <- c(final_pred_train,trn)
+    final_pred_test <- c(final_pred_test,tst)
+    ntree_col <- c(ntree_col,j)
+    mtry_col <- c(mtry_col,i)
+  }
+}
+(df <- data.frame(ntree_col,mtry_col,final_pred_train,final_pred_test))
+
+ggplot(df, aes(ntree_col)) + 
+  geom_line(aes(y=final_pred_test,color = 'red'))+
+  #geom_line(aes(y=final_pred_train,color='blue'))+
+  facet_wrap(~mtry_col)+
+  #theme(legend.position = c(0.9, 0.1))+
+  ylab('Accuracy') + xlab('ntree')
+
+```
+```{r}
+rf <- randomForest(TravelInsurance~.,train_data,ntree = 550,mtry=3)
+rf_pr <- predict(rf,newdata = select(test_data,-TravelInsurance),type = 'class')
+(cm <- table(rf_pr,test_data$TravelInsurance))
+cat('test Accuracy =',sum(diag(cm)) / sum(cm))
+rf_pr <- predict(rf,newdata = select(train_data,-TravelInsurance),type = 'class')
+(cm <- table(rf_pr,train_data$TravelInsurance))
+cat('train Accuracy =',sum(diag(cm)) / sum(cm))
+```
+
+
+
+
+
+
+
+
+
+
+
+
